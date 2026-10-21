@@ -59,8 +59,14 @@ Claude Desktop / Claude Code (`claude_desktop_config.json` ou `.mcp.json`) :
 
 `dougs_whoami`, `dougs_list_operations`, `dougs_count_operations`, `dougs_get_operation`, `dougs_search_categories`, `dougs_suggest_categories`, `dougs_categorize_operation` (dryRun par défaut), `dougs_validate_operation` (dryRun par défaut), `dougs_list_missing_receipts`, `dougs_attach_receipt` (dryRun par défaut), `dougs_vat_configuration`, `dougs_raw_request` (écriture seulement avec `allowWrite`).
 
+## Notes terrain
+
+- Validé en conditions réelles (oct. 2026) : upload de justificatif (`create-from-formdata`, champ `file`) et validation (`POST {...operation, validated:true}`).
+- Si une ligne passe à TVA 0 sur une catégorie normalement taxée, Dougs refuse la validation (400 / « toutes les associations doivent être renseignées ») tant que `associationData.vatExemptionReason` est vide. Valeur pour « la TVA n'est pas applicable » : `exemption:outbound:nonApplicable`.
+- Transport de personnes (Taxi et VTC) : TVA non déductible, Dougs met 0 même si la facture Uber affiche 10 %.
+
 ## Points non vérifiés
 
-- Le POST de mise à jour n'a pas été exécuté pendant la rétro-ingénierie (lecture seule). Tester d'abord sur une opération avec `dryRun:false` et vérifier dans l'UI que catégorie et TVA sont bien prises.
+- Le changement de catégorie/TVA via `dougs_categorize_operation` n'a pas encore été testé par l'API (fait via l'UI). Tester d'abord avec `dryRun:false` sur une opération et vérifier dans l'UI.
 - Le paramètre de recherche serveur n'est pas identifié avec certitude (`q` ne filtre pas) : le filtre texte/date est fait côté client sur la page récupérée.
 - API non officielle : peut casser à chaque déploiement du front Dougs.

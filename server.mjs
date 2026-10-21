@@ -212,6 +212,7 @@ server.tool(
     categoryId: z.number().int().optional(),
     vatRate: z.number().optional().describe("Ex : 0.2, 0.1, 0.055, 0 (taux décimal)"),
     vatAmount: z.number().optional().describe("Montant de TVA forcé (manuel)"),
+    vatExemptionReason: z.string().optional().describe("Obligatoire pour valider si la TVA passe à 0 sur une catégorie normalement taxée. Ex : exemption:outbound:nonApplicable (« la TVA n'est pas applicable »)"),
     validate: z.boolean().default(false),
     force: z.boolean().default(false).describe("Ajoute ?force=true comme le front"),
     dryRun: z.boolean().default(true),
@@ -228,6 +229,7 @@ server.tool(
       if (a.categoryId !== undefined) { bk.categoryId = a.categoryId; bk.isManuallyCategorized = true; }
       if (a.vatRate !== undefined) bk.vatRate = a.vatRate;
       if (a.vatAmount !== undefined) { bk.manualVatAmount = a.vatAmount; bk.vatAmount = a.vatAmount; bk.isVatAmountManuallyModified = true; }
+      if (a.vatExemptionReason) bk.associationData = { ...(bk.associationData || {}), vatExemptionReason: a.vatExemptionReason };
       const breakdowns = op.breakdowns.map((b, i) => (i === idx ? bk : b));
       const body = { ...op, breakdowns, updatedBreakdown: bk, ...(a.validate ? { validated: true } : {}) };
 
