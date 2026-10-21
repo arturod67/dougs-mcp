@@ -2,14 +2,23 @@
 
 MCP local (stdio) pour l'API interne de Dougs, reconstituée depuis le front app.dougs.fr (Angular).
 
-## Auth
+## Connexion (simple)
 
-- Même origine que le front : `https://app.dougs.fr/companies/{companyId}/...`
-- Session par cookie httpOnly (pas de header Authorization). Sans cookie : `401 Unauthorized`.
-- Login : `POST /auth/api/login` puis MFA (`/auth/api/mfa/send-email`, `/auth/api/mfa/verify`), donc pas de login automatique ici.
-- Renouvellement : `GET /users/me?refreshSession=true` (le MCP l'appelle toutes les 10 min et réinjecte les `Set-Cookie`).
+```bash
+npm install
+npm run login
+```
 
-Récupérer le cookie : Chrome > DevTools > Network > une requête `operations?...` > Request Headers > `cookie` > copier la valeur entière.
+Email, mot de passe, puis le code MFA (mail ou appli). La session est enregistrée dans `~/.config/dougs-mcp/session.json` (droits 600) avec l'ID société détecté automatiquement. Le MCP la lit au démarrage et y réécrit les cookies renouvelés. Si la session expire, l'outil renvoie un message clair : relancer `npm run login`.
+
+Alternative : `DOUGS_COOKIE` + `DOUGS_COMPANY_ID` en variables d'env (header `cookie` copié depuis DevTools), prioritaires sur le fichier.
+
+### Comment marche l'auth Dougs
+
+- API sur la même origine que le front : `https://app.dougs.fr/companies/{companyId}/...`
+- Session par cookie httpOnly, pas de header Authorization. Sans cookie : `401`.
+- `POST /auth/api/login {email,password}` puis, si MFA : `GET /auth/api/mfa/enabled-factors`, `POST /auth/api/mfa/send-email`, `POST /auth/api/mfa/verify {token,type}`.
+- Renouvellement : `GET /users/me?refreshSession=true` (appelé toutes les 10 min).
 
 ## Endpoints utilisés
 
@@ -21,6 +30,7 @@ Récupérer le cookie : Chrome > DevTools > Network > une requête `operations?.
 | Plan de catégories | GET | `/companies/{c}/categories?full=true` |
 | Suggestions | GET | `/companies/{c}/operations/{id}/breakdowns/{bid}/preferred-categories` |
 | Mise à jour (catégorie, TVA, validation) | POST | `/companies/{c}/operations/{id}` body = `{...operation, updatedBreakdown}` (option `?force=true`) |
+| Justificatif | POST | `/companies/{c}/operations/{id}/source-document-attachments/actions/create-from-formdata` (multipart, champ `file`) |
 | Régime TVA | GET | `/companies/{c}/vat-configurations` |
 
 Valider = même POST avec `validated: true` (c'est ce que fait le bouton du front).
@@ -39,11 +49,7 @@ Claude Desktop / Claude Code (`claude_desktop_config.json` ou `.mcp.json`) :
   "mcpServers": {
     "dougs": {
       "command": "node",
-      "args": ["/chemin/vers/dougs-mcp/server.mjs"],
-      "env": {
-        "DOUGS_COMPANY_ID": "ton_id_societe",
-        "DOUGS_COOKIE": "colle_ici_la_valeur_du_header_cookie"
-      }
+      "args": ["/chemin/vers/dougs-mcp/server.mjs"]
     }
   }
 }
@@ -51,7 +57,7 @@ Claude Desktop / Claude Code (`claude_desktop_config.json` ou `.mcp.json`) :
 
 ## Outils
 
-`dougs_whoami`, `dougs_list_operations`, `dougs_count_operations`, `dougs_get_operation`, `dougs_search_categories`, `dougs_suggest_categories`, `dougs_categorize_operation` (dryRun par défaut), `dougs_validate_operation` (dryRun par défaut), `dougs_vat_configuration`, `dougs_raw_request` (écriture seulement avec `allowWrite`).
+`dougs_whoami`, `dougs_list_operations`, `dougs_count_operations`, `dougs_get_operation`, `dougs_search_categories`, `dougs_suggest_categories`, `dougs_categorize_operation` (dryRun par défaut), `dougs_validate_operation` (dryRun par défaut), `dougs_list_missing_receipts`, `dougs_attach_receipt` (dryRun par défaut), `dougs_vat_configuration`, `dougs_raw_request` (écriture seulement avec `allowWrite`).
 
 ## Points non vérifiés
 

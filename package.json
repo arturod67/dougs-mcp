@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "dougs-mcp": "server.mjs" },
+  "bin": { "dougs-mcp": "server.mjs", "dougs-login": "login.mjs" },
+  "scripts": {
+    "login": "node login.mjs",
+    "start": "node server.mjs"
+  },
   "engines": { "node": ">=20" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",

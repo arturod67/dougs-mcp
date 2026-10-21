@@ -1,22 +1,26 @@
 #!/usr/bin/env node
 // Mini MCP local pour l'API interne de Dougs (app.dougs.fr).
-// Auth : cookie de session httpOnly du navigateur (le login passe par MFA, donc pas de login programmatique ici).
+// Auth : cookie de session httpOnly. Le plus simple : `npm run login` (email + mot de passe + MFA),
+// qui enregistre la session dans ~/.config/dougs-mcp/session.json. Le serveur la lit et la tient à jour.
 //
-// Variables d'env :
-//   DOUGS_COOKIE      (obligatoire) en-tête Cookie complet copié depuis DevTools sur une requête app.dougs.fr/companies/...
-//   DOUGS_COMPANY_ID  (obligatoire) ID société visible dans l URL app.dougs.fr/app/c/<ID>/
-//   DOUGS_BASE_URL    (défaut https://app.dougs.fr)
+// Variables d'env (facultatives, prioritaires sur le fichier de session) :
+//   DOUGS_COOKIE        en-tête Cookie complet copié depuis DevTools
+//   DOUGS_COMPANY_ID    ID société (URL app.dougs.fr/app/c/<ID>/)
+//   DOUGS_SESSION_FILE  chemin du fichier de session
+//   DOUGS_BASE_URL      (défaut https://app.dougs.fr)
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { BASE, SESSION_FILE, loadSession, saveSession, mergeCookies as merge, headers as baseHeaders } from "./session.mjs";
 
-const BASE = process.env.DOUGS_BASE_URL || "https://app.dougs.fr";
-const COMPANY = process.env.DOUGS_COMPANY_ID || "";
-let COOKIE = process.env.DOUGS_COOKIE || "";
+const stored = loadSession();
+const COMPANY = process.env.DOUGS_COMPANY_ID || stored?.companyId || "";
+let COOKIE = process.env.DOUGS_COOKIE || stored?.cookie || "";
+const PERSIST = !process.env.DOUGS_COOKIE && !!stored;
 
 if (!COOKIE || !COMPANY) {
-  console.error("DOUGS_COOKIE et DOUGS_COMPANY_ID sont obligatoires");
+  console.error(`Pas de session Dougs. Lance \`npm run login\` (fichier ${SESSION_FILE}) ou définis DOUGS_COOKIE et DOUGS_COMPANY_ID.`);
   process.exit(1);
 }
 
@@ -26,14 +30,7 @@ async function api(method, path, { query, body } = {}) {
   if (query) for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   const res = await fetch(url, {
     method,
-    headers: {
-      Cookie: COOKIE,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Origin: BASE,
-      Referer: BASE + "/app/",
-      "User-Agent": "Mozilla/5.0 dougs-mcp",
-    },
+    headers: baseHeaders(COOKIE),
     body: body ? JSON.stringify(body) : undefined,
   });
   // Le serveur peut renouveler le cookie de session : on le réinjecte.
@@ -44,21 +41,17 @@ async function api(method, path, { query, body } = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const msg = typeof data === "object" && data?.message ? data.message : text.slice(0, 300);
+    if (res.status === 401) throw new Error(`Session Dougs expirée : relance \`npm run login\` dans le dossier du MCP, puis redémarre-le.`);
     throw new Error(`Dougs ${method} ${url.pathname} -> ${res.status}: ${msg}`);
   }
   return data;
 }
 
 function mergeCookies(setCookies) {
-  const jar = new Map(COOKIE.split(";").map(c => c.trim()).filter(Boolean).map(c => {
-    const i = c.indexOf("="); return [c.slice(0, i), c.slice(i + 1)];
-  }));
-  for (const sc of setCookies) {
-    const pair = sc.split(";")[0];
-    const i = pair.indexOf("=");
-    jar.set(pair.slice(0, i).trim(), pair.slice(i + 1));
-  }
-  COOKIE = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  const next = merge(COOKIE, setCookies);
+  if (next === COOKIE) return;
+  COOKIE = next;
+  if (PERSIST) { try { saveSession({ ...stored, cookie: COOKIE, companyId: COMPANY }); } catch (e) { console.error("save session:", e.message); } }
 }
 
 // Keepalive : même appel que le front (refreshSession=true) toutes les 10 min.
@@ -266,6 +259,51 @@ server.tool(
       if (a.dryRun) return ok({ dryRun: true, operation: `${op.date} ${op.wording} ${op.amount}`, validated: `${op.validated} -> ${a.validated}` });
       const updated = await api("POST", `/companies/${COMPANY}/operations/${op.id}`, { body: { ...op, validated: a.validated } });
       return ok({ applied: true, result: summarizeOp(updated ?? op) });
+    } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "dougs_list_missing_receipts",
+  "Opérations non validées sans justificatif rattaché (sourceDocumentAttachments vide).",
+  {
+    inbound: z.boolean().optional().describe("Défaut : toutes. false = dépenses seulement"),
+    text: z.string().optional(),
+    limit: z.number().int().min(1).max(500).default(200),
+  },
+  async a => {
+    try {
+      let ops = await api("GET", `/companies/${COMPANY}/operations`, { query: { limit: a.limit, offset: 0, needsAttention: false, validated: false } });
+      ops = ops.filter(o => !(o.sourceDocumentAttachments || []).length && o.amount !== 0);
+      if (a.inbound !== undefined) ops = ops.filter(o => o.isInbound === a.inbound);
+      if (a.text) { const t = a.text.toLowerCase(); ops = ops.filter(o => `${o.wording} ${o.memo}`.toLowerCase().includes(t)); }
+      return ok({ count: ops.length, operations: ops.map(summarizeOp) });
+    } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "dougs_attach_receipt",
+  "Rattache un fichier local (PDF/image) comme justificatif à une opération, comme le glisser-déposer du front. dryRun=true par défaut.",
+  { operationId: z.number().int(), filePath: z.string(), dryRun: z.boolean().default(true) },
+  async a => {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const { basename, extname } = await import("node:path");
+      const buf = await readFile(a.filePath);
+      const op = await api("GET", `/companies/${COMPANY}/operations/${a.operationId}`);
+      const info = { operation: `${op.date} ${op.wording} ${op.isInbound ? "+" : "-"}${op.amount}`, file: basename(a.filePath), bytes: buf.length,
+        alreadyAttached: (op.sourceDocumentAttachments || []).length };
+      if (a.dryRun) return ok({ dryRun: true, ...info });
+      const mime = { ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg" }[extname(a.filePath).toLowerCase()] || "application/octet-stream";
+      const form = new FormData();
+      form.append("file", new Blob([buf], { type: mime }), basename(a.filePath));
+      const h = baseHeaders(COOKIE); delete h["Content-Type"];
+      const res = await fetch(`${BASE}/companies/${COMPANY}/operations/${op.id}/source-document-attachments/actions/create-from-formdata`, { method: "POST", headers: h, body: form });
+      const sc = res.headers.getSetCookie?.() || []; if (sc.length) mergeCookies(sc);
+      const text = await res.text();
+      if (!res.ok) throw new Error(`upload -> ${res.status}: ${text.slice(0, 300)}`);
+      return ok({ applied: true, ...info });
     } catch (e) { return fail(e); }
   }
 );
